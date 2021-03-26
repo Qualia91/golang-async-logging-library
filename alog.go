@@ -28,15 +28,36 @@ func New(w io.Writer) *Alog {
 	if w == nil {
 		w = os.Stdout
 	}
+	m := &sync.Mutex{}
 	return &Alog{
-		dest: w,
+		dest:               w,
+		msgCh:              make(chan string),
+		errorCh:            make(chan error),
+		m:                  m,
+		shutdownCh:         make(chan struct{}),
+		shutdownCompleteCh: make(chan struct{}),
 	}
 }
 
 // Start begins the message loop for the asynchronous logger. It should be initiated as a goroutine to prevent
 // the caller from being blocked.
 func (al Alog) Start() {
-
+	wg := &sync.WaitGroup{}
+	for {
+		select {
+		case receivedMsg := <-al.msgCh:
+			go func(receivedMsg string, al Alog) {
+				wg.Add(1)
+				al.m.Lock()
+				al.write(receivedMsg, wg)
+				al.m.Unlock()
+			}(receivedMsg, al)
+		case <-al.shutdownCh:
+			wg.Wait()
+			al.shutdown()
+			return
+		}
+	}
 }
 
 func (al Alog) formatMessage(msg string) string {
@@ -47,26 +68,35 @@ func (al Alog) formatMessage(msg string) string {
 }
 
 func (al Alog) write(msg string, wg *sync.WaitGroup) {
+	if _, err := al.dest.Write([]byte(al.formatMessage(msg))); err != nil {
+		al.errorCh <- err
+	}
+	wg.Done()
 }
 
 func (al Alog) shutdown() {
+	shutdownMessage := <-al.shutdownCh
+	close(al.msgCh)
+	al.shutdownCompleteCh <- shutdownMessage
+
 }
 
 // MessageChannel returns a channel that accepts messages that should be written to the log.
-func (al Alog) MessageChannel() chan string {
-	return nil
+func (al Alog) MessageChannel() chan<- string {
+	return al.msgCh
 }
 
 // ErrorChannel returns a channel that will be populated when an error is raised during a write operation.
 // This channel should always be monitored in some way to prevent deadlock goroutines from being generated
 // when errors occur.
-func (al Alog) ErrorChannel() chan error {
-	return nil
+func (al Alog) ErrorChannel() <-chan error {
+	return al.errorCh
 }
 
 // Stop shuts down the logger. It will wait for all pending messages to be written and then return.
 // The logger will no longer function after this method has been called.
 func (al Alog) Stop() {
+	al.shutdownCh <- <-al.shutdownCompleteCh
 }
 
 // Write synchronously sends the message to the log output
