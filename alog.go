@@ -48,9 +48,7 @@ func (al Alog) Start() {
 		case receivedMsg := <-al.msgCh:
 			go func(receivedMsg string, al Alog) {
 				wg.Add(1)
-				al.m.Lock()
 				al.write(receivedMsg, wg)
-				al.m.Unlock()
 			}(receivedMsg, al)
 		case <-al.shutdownCh:
 			wg.Wait()
@@ -68,8 +66,12 @@ func (al Alog) formatMessage(msg string) string {
 }
 
 func (al Alog) write(msg string, wg *sync.WaitGroup) {
+	al.m.Lock()
+	defer al.m.Unlock()
 	if _, err := al.dest.Write([]byte(al.formatMessage(msg))); err != nil {
-		al.errorCh <- err
+		go func(err error) {
+			al.errorCh <- err
+		}(err)
 	}
 	wg.Done()
 }
